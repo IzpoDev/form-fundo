@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Registro de Dorsales - Equipo Swift</title>
+  <style>
+    :root { --primary: #e11d48; --bg: #0f172a; --card: #1e293b; --text: #f8fafc; --muted: #94a3b8; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; display: flex; justify-content: center; }
+    .container { background: var(--card); max-width: 540px; width: 100%; padding: 28px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.4); }
+    h1 { margin-top: 0; margin-bottom: 8px; font-size: 1.55rem; color: #fff; }
+    .subtitle { color: var(--muted); font-size: 0.92rem; margin-bottom: 18px; line-height: 1.5; }
+    
+    /* Tarjeta de precios */
+    .pricing-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+    .price-card { background: #0f172a; border: 1px solid #334155; border-radius: 10px; padding: 12px 14px; font-size: 0.85rem; }
+    .price-card h3 { margin: 0 0 8px 0; font-size: 0.9rem; color: #38bdf8; }
+    .price-card ul { list-style: none; padding: 0; margin: 0; color: #e2e8f0; line-height: 1.6; }
+    .price-card li { display: flex; justify-content: space-between; }
+    .price-card span.cost { font-weight: 700; color: #fff; }
+
+    /* Contenedor de imagen de la camiseta */
+    .jersey-box { background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 12px; margin-bottom: 22px; text-align: center; }
+    .jersey-box p { margin: 0 0 10px 0; font-size: 0.85rem; font-weight: 600; color: var(--muted); text-align: left; }
+    .jersey-box img { width: 100%; max-height: 280px; object-fit: contain; border-radius: 8px; display: block; margin: 0 auto; }
+
+    .field { margin-bottom: 16px; }
+    label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 0.9rem; }
+    input, select { width: 100%; padding: 11px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #fff; font-size: 1rem; box-sizing: border-box; }
+    input:focus, select:focus { outline: none; border-color: var(--primary); }
+    .price-box { background: #0f172a; border: 1px solid #334155; padding: 14px; border-radius: 10px; margin: 20px 0; display: flex; justify-content: space-between; align-items: center; }
+    .price-amount { font-size: 1.4rem; font-weight: 800; color: #38bdf8; }
+    button { width: 100%; padding: 14px; background: var(--primary); color: white; border: none; border-radius: 10px; font-size: 1rem; font-weight: 700; cursor: pointer; transition: 0.2s; }
+    button:disabled { background: #475569; cursor: not-allowed; }
+    .alert { padding: 12px; border-radius: 8px; margin-bottom: 16px; display: none; font-size: 0.9rem; }
+    .alert.error { background: rgba(225, 29, 72, 0.2); border: 1px solid #e11d48; color: #fda4af; }
+    .alert.success { background: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; color: #6ee7b7; }
+
+    @media (max-width: 480px) {
+      .pricing-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h1>Registro de dorsales y tallas Egresados</h1>
+  <p class="subtitle">
+    Actividad de integración el <strong>21 de Noviembre 2026</strong><br><br>
+    Este formulario nos ayudará a registrar tus datos y los dorsales que tendrán en las camisetas.<br>
+    Equipo de Egresados <strong>"Swift"</strong>
+  </p>
+
+  <!-- Cuadro de precios -->
+  <div class="pricing-grid">
+    <div class="price-card">
+      <h3>Polo Hombre o Mujer</h3>
+      <ul>
+        <li><span>S / M / L</span> <span class="cost">S/ 35</span></li>
+        <li><span>XL</span> <span class="cost">S/ 39</span></li>
+        <li><span>Doble XL</span> <span class="cost">S/ 41</span></li>
+      </ul>
+    </div>
+    <div class="price-card">
+      <h3>Conjunto polo y short</h3>
+      <ul>
+        <li><span>S / M / L</span> <span class="cost">S/ 50</span></li>
+        <li><span>XL</span> <span class="cost">S/ 54</span></li>
+        <li><span>Doble XL</span> <span class="cost">S/ 56</span></li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Imagen de referencia de la camiseta -->
+  <div class="jersey-box">
+    <p>Modelo de Camiseta:</p>
+    <img src="/camiseta.jpeg" alt="Diseño de camiseta Equipo Swift">
+  </div>
+
+  <div id="alertBox" class="alert"></div>
+
+  <form id="registroForm">
+    <div class="field">
+      <label>ID UPAO *</label>
+      <input type="text" id="id_upao" required maxlength="9" inputmode="numeric" pattern="[0-9]*" placeholder="Ej. 000227336">
+    </div>
+
+    <div class="field">
+      <label>Nombre Completo *</label>
+      <input type="text" id="nombre" required placeholder="Nombres y apellidos">
+    </div>
+
+    <div class="field">
+      <label>Celular *</label>
+      <input type="tel" id="celular" required placeholder="Ej. 999888777">
+    </div>
+
+    <div class="field">
+      <label>Apodo (Este dato será estampado en la camiseta junto con el número) *</label>
+      <input type="text" id="apodo" required maxlength="15" placeholder="Ej. MORGADO">
+    </div>
+
+    <div class="field">
+      <label>Género *</label>
+      <select id="genero" required>
+        <option value="">Selecciona...</option>
+        <option value="Masculino">Masculino</option>
+        <option value="Femenino">Femenino</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>Dorsal disponible *</label>
+      <select id="dorsal" required disabled>
+        <option value="">Cargando dorsales...</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>Talla *</label>
+      <select id="talla" required onchange="calcularPrecio()">
+        <option value="S">S</option>
+        <option value="M" selected>M</option>
+        <option value="L">L</option>
+        <option value="XL">XL</option>
+        <option value="2 XL">Doble XL (2 XL)</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>¿Desea Short? *</label>
+      <select id="short" required onchange="calcularPrecio()">
+        <option value="No" selected>No (Solo Polo)</option>
+        <option value="Si">Sí (Conjunto Polo y Short)</option>
+      </select>
+    </div>
+
+    <div class="price-box">
+      <span>Total a pagar:</span>
+      <span class="price-amount" id="precioTexto">S/ 35.00</span>
+    </div>
+
+    <button type="submit" id="btnSubmit" disabled>Reservar Dorsal</button>
+  </form>
+</div>
+
+<script>
+  const selectDorsal = document.getElementById('dorsal');
+  const btnSubmit = document.getElementById('btnSubmit');
+  const alertBox = document.getElementById('alertBox');
+
+  async function cargarDorsales() {
+    selectDorsal.disabled = true;
+    btnSubmit.disabled = true;
+    try {
+      const res = await fetch('/api/dorsales');
+      const data = await res.json();
+      actualizarSelectDorsales(data.dorsales);
+    } catch (err) {
+      mostrarAlerta('Error al cargar los dorsales. Recarga la página.', 'error');
+    }
+  }
+
+  function actualizarSelectDorsales(lista) {
+    selectDorsal.innerHTML = '';
+    if (!lista || lista.length === 0) {
+      selectDorsal.innerHTML = '<option value="">¡No quedan dorsales disponibles!</option>';
+      return;
+    }
+    selectDorsal.innerHTML = '<option value="">Elige tu número...</option>';
+    lista.forEach(num => {
+      const opt = document.createElement('option');
+      opt.value = num;
+      opt.textContent = `# ${num}`;
+      selectDorsal.appendChild(opt);
+    });
+    selectDorsal.disabled = false;
+    btnSubmit.disabled = false;
+  }
+
+  function calcularPrecio() {
+    const talla = document.getElementById('talla').value;
+    const conShort = document.getElementById('short').value === 'Si';
+    let precio = 35;
+
+    if (!conShort) {
+      precio = talla === 'XL' ? 39 : (talla === '2 XL' ? 41 : 35);
+    } else {
+      precio = talla === 'XL' ? 54 : (talla === '2 XL' ? 56 : 50);
+    }
+    document.getElementById('precioTexto').textContent = `S/ ${precio}.00`;
+  }
+
+  function mostrarAlerta(msg, tipo) {
+    alertBox.textContent = msg;
+    alertBox.className = `alert ${tipo}`;
+    alertBox.style.display = 'block';
+  }
+
+  document.getElementById('registroForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    alertBox.style.display = 'none';
+    btnSubmit.disabled = true;
+    btnSubmit.textContent = 'Reservando...';
+
+    const payload = {
+      id_upao: document.getElementById('id_upao').value,
+      nombre_completo: document.getElementById('nombre').value,
+      celular: document.getElementById('celular').value,
+      apodo: document.getElementById('apodo').value,
+      genero: document.getElementById('genero').value,
+      dorsal: parseInt(selectDorsal.value, 10),
+      talla: document.getElementById('talla').value,
+      short: document.getElementById('short').value
+    };
+
+    try {
+      const res = await fetch('/api/registrar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const result = await res.json();
+
+      if (res.ok && result.status === 'ok') {
+        mostrarAlerta(result.message, 'success');
+        document.getElementById('registroForm').reset();
+        calcularPrecio();
+        await cargarDorsales();
+      } else if (res.status === 409) {
+        mostrarAlerta(result.message, 'error');
+        actualizarSelectDorsales(result.dorsales);
+      } else {
+        mostrarAlerta(result.detail || 'Error al registrar.', 'error');
+        btnSubmit.disabled = false;
+      }
+    } catch (err) {
+      mostrarAlerta('Error de conexión con el servidor.', 'error');
+      btnSubmit.disabled = false;
+    } finally {
+      btnSubmit.textContent = 'Reservar Dorsal';
+    }
+  });
+
+  cargarDorsales();
+</script>
+</body>
+</html>
