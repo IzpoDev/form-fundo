@@ -1,10 +1,13 @@
 import os
 import json
+import time
 import threading
+import traceback
+from collections import defaultdict
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -19,9 +22,24 @@ HOJA_DORSALES = os.getenv("HOJA_DORSALES", "Dorsales")
 HOJA_REGISTROS = os.getenv("HOJA_REGISTROS", "Registro")
 CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 
-app = FastAPI(title="Registro de Dorsales Swift")
+# Desactivamos /docs, /redoc y /openapi.json en producción
+app = FastAPI(
+    title="Registro de Dorsales Swift",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
+
 lock = threading.Lock()
 
+# Caché en memoria para proteger la cuota de lectura de Google Sheets
+cache_dorsales = {"data": None, "timestamp": 0}
+CACHE_TTL = 10  # segundos
+
+# Control de spam por IP (máximo 6 intentos por minuto por IP)
+intentos_ip = defaultdict(list)
+
+# Conexión a Google Sheets (nube via variable JSON o local via archivo)
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 if os.getenv("GOOGLE_CREDENTIALS_JSON"):
     info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
@@ -34,14 +52,14 @@ sh = gc.open_by_key(SPREADSHEET_ID)
 
 
 class RegistroRequest(BaseModel):
-    id_upao: str
-    nombre_completo: str
-    celular: str
-    apodo: str
-    genero: str
-    dorsal: int
-    talla: str
-    short: str
+    id_upao: str = Field(..., min_length=1, max_length=15)
+    nombre_completo: str = Field(..., min_length=2, max_length=80)
+    celular: str = Field(..., min_length=6, max_length=15)
+    apodo: str = Field(..., min_length=1, max_length=20)
+    genero: str = Field(..., max_length=15)
+    dorsal: int = Field(..., ge=1, le=999)
+    talla: str = Field(..., max_length=10)
+    short: str = Field(..., max_length=5)
 
 
 def normalizar_id(raw_id: str) -> str:
@@ -57,10 +75,22 @@ def calcular_precio(talla: str, short: str) -> int:
     return 54 if talla == "XL" else (56 if talla == "2 XL" else 50)
 
 
-def obtener_dorsales_disponibles() -> list[int]:
+def obtener_dorsales_disponibles(forzar_recarga: bool = False) -> list[int]:
+    ahora = time.time()
+    if (
+        not forzar_recarga
+        and cache_dorsales["data"] is not None
+        and (ahora - cache_dorsales["timestamp"]) < CACHE_TTL
+    ):
+        return cache_dorsales["data"]
+
     ws = sh.worksheet(HOJA_DORSALES)
     valores = ws.col_values(1)[1:]
-    return sorted([int(v.strip()) for v in valores if v.strip().isdigit()])
+    dorsales = sorted([int(v.strip()) for v in valores if v.strip().isdigit()])
+
+    cache_dorsales["data"] = dorsales
+    cache_dorsales["timestamp"] = ahora
+    return dorsales
 
 
 def buscar_fila_dorsal(ws_dorsales, numero_dorsal: int) -> int | None:
@@ -86,12 +116,29 @@ def servir_imagen():
 def listar_dorsales():
     try:
         return {"status": "ok", "dorsales": obtener_dorsales_disponibles()}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Error al consultar dorsales.")
 
 
 @app.post("/api/registrar")
-def registrar_participante(data: RegistroRequest):
+def registrar_participante(data: RegistroRequest, request: Request):
+    # Extraer IP real detrás del proxy de Render o Cloudflare
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        client_ip = forwarded.split(",")[0].strip()
+    else:
+        client_ip = request.headers.get("CF-Connecting-IP") or request.client.host
+
+    ahora = time.time()
+    intentos_ip[client_ip] = [t for t in intentos_ip[client_ip] if ahora - t < 60]
+    if len(intentos_ip[client_ip]) >= 6:
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos. Espera un minuto antes de volver a intentar.",
+        )
+    intentos_ip[client_ip].append(ahora)
+
     with lock:
         try:
             ws_dorsales = sh.worksheet(HOJA_DORSALES)
@@ -99,7 +146,7 @@ def registrar_participante(data: RegistroRequest):
 
             id_limpio = normalizar_id(data.id_upao)
 
-            # 1. Buscar si el ID UPAO ya existe (normalizando también lo leído en la hoja)
+            # 1. Buscar si el ID UPAO ya existe en la pestaña "Registro"
             todos_registros = ws_registros.get_all_values()
             fila_existente = None
             dorsal_anterior = None
@@ -111,7 +158,7 @@ def registrar_participante(data: RegistroRequest):
                         dorsal_anterior = int(fila[3].strip())
                     break
 
-            # 2. Verificar que el nuevo dorsal elegido esté disponible
+            # 2. Verificar disponibilidad del nuevo dorsal
             fila_nuevo_dorsal = buscar_fila_dorsal(ws_dorsales, data.dorsal)
             if not fila_nuevo_dorsal:
                 return JSONResponse(
@@ -119,13 +166,14 @@ def registrar_participante(data: RegistroRequest):
                     content={
                         "status": "taken",
                         "message": f"El dorsal #{data.dorsal} acaba de ser ocupado. Elige otro.",
-                        "dorsales": obtener_dorsales_disponibles(),
+                        "dorsales": obtener_dorsales_disponibles(forzar_recarga=True),
                     },
                 )
 
-            # 3. Ocupar el nuevo dorsal
+            # 3. Ocupar el nuevo dorsal (eliminarlo de "Dorsales")
             ws_dorsales.delete_rows(fila_nuevo_dorsal)
 
+            # Orden exacto A:H -> id | nombre completo | apodo | dorsal | short | talla | sexo | celular
             fila_datos = [
                 id_limpio,
                 data.nombre_completo.strip(),
@@ -138,7 +186,7 @@ def registrar_participante(data: RegistroRequest):
             ]
             precio = calcular_precio(data.talla, data.short)
 
-            # 4. Actualizar fila si el ID ya existía (RAW conserva los ceros iniciales)
+            # 4. Si el ID ya existía -> Actualizar fila y liberar el dorsal anterior
             if fila_existente:
                 ws_registros.update(
                     range_name=f"A{fila_existente}:H{fila_existente}",
@@ -151,18 +199,22 @@ def registrar_participante(data: RegistroRequest):
                     ws_dorsales.append_row([dorsal_anterior], value_input_option="RAW")
                     msg_dorsal = f"Se cambió tu dorsal #{dorsal_anterior} por el #{data.dorsal} (el #{dorsal_anterior} volvió a estar disponible)."
 
+                cache_dorsales["timestamp"] = 0
+
                 return {
                     "status": "ok",
                     "message": f"¡Datos actualizados para el ID {id_limpio}! {msg_dorsal} Total: S/ {precio}.00.",
                 }
 
-            # 5. Insertar nuevo registro
-            siguiente_fila = len(ws_registros.col_values(1)) + 1
+            # 5. Si es un ID nuevo -> Insertar en la siguiente fila libre
+            siguiente_fila = sum(1 for f in todos_registros if len(f) > 0 and f[0].strip() != "") + 1
             ws_registros.update(
                 range_name=f"A{siguiente_fila}:H{siguiente_fila}",
                 values=[fila_datos],
                 value_input_option="RAW",
             )
+
+            cache_dorsales["timestamp"] = 0
 
             return {
                 "status": "ok",
@@ -170,4 +222,5 @@ def registrar_participante(data: RegistroRequest):
             }
 
         except Exception as e:
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
