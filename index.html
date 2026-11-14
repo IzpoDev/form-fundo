@@ -150,29 +150,54 @@
   const selectDorsal = document.getElementById('dorsal');
   const btnSubmit = document.getElementById('btnSubmit');
   const alertBox = document.getElementById('alertBox');
+  let ultimaCargaDorsales = 0;
+  let cargandoDorsales = false;
 
-  async function cargarDorsales() {
-    selectDorsal.disabled = true;
-    btnSubmit.disabled = true;
+  async function cargarDorsales(silencioso = false) {
+    if (cargandoDorsales) return;
+    cargandoDorsales = true;
+    if (!silencioso) {
+      selectDorsal.disabled = true;
+      btnSubmit.disabled = true;
+    }
     try {
       const res = await fetch('/api/dorsales');
       const data = await res.json();
       if (!res.ok) {
         selectDorsal.innerHTML = '<option value="">Inscripciones cerradas</option>';
+        selectDorsal.disabled = true;
+        btnSubmit.disabled = true;
         mostrarAlerta(data.detail || 'Las inscripciones han sido cerradas. Ya no es posible registrarse.', 'error');
         return;
       }
+      ultimaCargaDorsales = Date.now();
       actualizarSelectDorsales(data.dorsales);
     } catch (err) {
-      selectDorsal.innerHTML = '<option value="">Inscripciones cerradas</option>';
-      mostrarAlerta('Las inscripciones han sido cerradas. Ya no es posible registrarse.', 'error');
+      if (!silencioso) {
+        selectDorsal.innerHTML = '<option value="">Inscripciones cerradas</option>';
+        mostrarAlerta('Las inscripciones han sido cerradas. Ya no es posible registrarse.', 'error');
+      }
+    } finally {
+      cargandoDorsales = false;
     }
   }
 
+  function refrescarDorsalesAlAbrir() {
+    if (Date.now() - ultimaCargaDorsales >= 3000) {
+      cargarDorsales(true);
+    }
+  }
+
+  selectDorsal.addEventListener('pointerdown', refrescarDorsalesAlAbrir);
+  selectDorsal.addEventListener('focus', refrescarDorsalesAlAbrir);
+
   function actualizarSelectDorsales(lista) {
+    const seleccionActual = selectDorsal.value;
     selectDorsal.innerHTML = '';
     if (!lista || lista.length === 0) {
       selectDorsal.innerHTML = '<option value="">¡No quedan dorsales disponibles!</option>';
+      selectDorsal.disabled = true;
+      btnSubmit.disabled = true;
       return;
     }
     selectDorsal.innerHTML = '<option value="">Elige tu número...</option>';
@@ -182,6 +207,9 @@
       opt.textContent = `# ${num}`;
       selectDorsal.appendChild(opt);
     });
+    if (seleccionActual && lista.some(num => String(num) === seleccionActual)) {
+      selectDorsal.value = seleccionActual;
+    }
     selectDorsal.disabled = false;
     btnSubmit.disabled = false;
   }

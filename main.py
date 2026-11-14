@@ -36,10 +36,19 @@ lock = threading.Lock()
 
 # Caché en memoria para proteger la cuota de lectura de Google Sheets
 cache_dorsales = {"data": None, "timestamp": 0}
-CACHE_TTL = 10  # segundos
+CACHE_TTL = 3  # segundos
 
-# Control de spam por IP (máximo 6 intentos por minuto por IP)
+# Control de spam y bloqueo temporal por IP (5 horas)
+BLOQUEO_SEGUNDOS = 5 * 60 * 60
+MAX_REQ_MINUTO_GLOBAL = 60
+MAX_404_MINUTO = 5
+MAX_REGISTRO_MINUTO = 6
+
 intentos_ip = defaultdict(list)
+trafico_ip = defaultdict(list)
+sospechas_ip = defaultdict(list)
+ips_bloqueadas: dict[str, float] = {}
+security_lock = threading.Lock()
 
 # Conexión a Google Sheets (nube via variable JSON o local via archivo)
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -107,6 +116,81 @@ def buscar_fila_dorsal(ws_dorsales, numero_dorsal: int) -> int | None:
     return None
 
 
+def obtener_ip_cliente(request: Request) -> str:
+    """Extrae la IP real detrás del proxy de Render o Cloudflare."""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.headers.get("CF-Connecting-IP") or (
+        request.client.host if request.client else "unknown"
+    )
+
+
+def respuesta_ip_bloqueada(request: Request, segundos_restantes: int):
+    """Devuelve pantalla de restricción para navegación o JSON para la API."""
+    horas = max(1, (segundos_restantes + 3599) // 3600)
+    if request.url.path.startswith("/api/"):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "status": "blocked",
+                "detail": f"Acceso restringido temporalmente por actividad inusual. Intenta nuevamente en ~{horas} hora(s).",
+            },
+        )
+    html = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Acceso Restringido</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico?v=2">
+  <style>
+    body {{ font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }}
+    .card {{ background: #1e293b; border: 1px solid #e11d48; border-radius: 14px; padding: 28px; max-width: 460px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.4); }}
+    h1 {{ color: #fda4af; font-size: 1.4rem; margin-top: 0; }}
+    p {{ color: #cbd5e1; line-height: 1.5; margin-bottom: 0; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Acceso restringido temporalmente</h1>
+    <p>Se detectó actividad inusual desde tu dirección IP. La vista de registro ha sido bloqueada temporalmente (aprox. {horas} hora(s)).</p>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html, status_code=403)
+
+
+@app.middleware("http")
+async def middleware_proteccion_ip(request: Request, call_next):
+    client_ip = obtener_ip_cliente(request)
+    ahora = time.time()
+
+    with security_lock:
+        expira = ips_bloqueadas.get(client_ip)
+        if expira is not None:
+            if ahora < expira:
+                return respuesta_ip_bloqueada(request, int(expira - ahora))
+            del ips_bloqueadas[client_ip]
+
+        trafico_ip[client_ip] = [t for t in trafico_ip[client_ip] if ahora - t < 60]
+        trafico_ip[client_ip].append(ahora)
+        if len(trafico_ip[client_ip]) > MAX_REQ_MINUTO_GLOBAL:
+            ips_bloqueadas[client_ip] = ahora + BLOQUEO_SEGUNDOS
+            return respuesta_ip_bloqueada(request, BLOQUEO_SEGUNDOS)
+
+    response = await call_next(request)
+
+    if response.status_code in (404, 405):
+        with security_lock:
+            sospechas_ip[client_ip] = [t for t in sospechas_ip[client_ip] if ahora - t < 60]
+            sospechas_ip[client_ip].append(ahora)
+            if len(sospechas_ip[client_ip]) >= MAX_404_MINUTO:
+                ips_bloqueadas[client_ip] = ahora + BLOQUEO_SEGUNDOS
+
+    return response
+
+
 @app.get("/", response_class=HTMLResponse)
 def servir_formulario():
     with open(os.path.join(BASE_DIR, "index.html"), "r", encoding="utf-8") as f:
@@ -137,21 +221,17 @@ def listar_dorsales():
 
 @app.post("/api/registrar")
 def registrar_participante(data: RegistroRequest, request: Request):
-    # Extraer IP real detrás del proxy de Render o Cloudflare
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        client_ip = forwarded.split(",")[0].strip()
-    else:
-        client_ip = request.headers.get("CF-Connecting-IP") or request.client.host
-
+    client_ip = obtener_ip_cliente(request)
     ahora = time.time()
-    intentos_ip[client_ip] = [t for t in intentos_ip[client_ip] if ahora - t < 60]
-    if len(intentos_ip[client_ip]) >= 6:
-        raise HTTPException(
-            status_code=429,
-            detail="Demasiados intentos. Espera un minuto antes de volver a intentar.",
-        )
-    intentos_ip[client_ip].append(ahora)
+    with security_lock:
+        intentos_ip[client_ip] = [t for t in intentos_ip[client_ip] if ahora - t < 60]
+        if len(intentos_ip[client_ip]) >= MAX_REGISTRO_MINUTO:
+            ips_bloqueadas[client_ip] = ahora + BLOQUEO_SEGUNDOS
+            raise HTTPException(
+                status_code=403,
+                detail="Demasiados intentos. Tu acceso ha sido restringido temporalmente por 5 horas.",
+            )
+        intentos_ip[client_ip].append(ahora)
 
     with lock:
         try:
@@ -187,7 +267,9 @@ def registrar_participante(data: RegistroRequest, request: Request):
             # 3. Ocupar el nuevo dorsal (eliminarlo de "Dorsales")
             ws_dorsales.delete_rows(fila_nuevo_dorsal)
 
-            # Orden exacto A:H -> id | nombre completo | apodo | dorsal | short | talla | sexo | celular
+            precio = calcular_precio(data.talla, data.short)
+
+            # Orden exacto A:K -> id | nombre completo | apodo | dorsal | short | talla | sexo | celular | pago | monto | Restante
             fila_datos = [
                 id_limpio,
                 data.nombre_completo.strip(),
@@ -197,13 +279,15 @@ def registrar_participante(data: RegistroRequest, request: Request):
                 data.talla,
                 data.genero,
                 data.celular.strip(),
+                "No",
+                0,
+                precio,
             ]
-            precio = calcular_precio(data.talla, data.short)
 
             # 4. Si el ID ya existía -> Actualizar fila y liberar el dorsal anterior
             if fila_existente:
                 ws_registros.update(
-                    range_name=f"A{fila_existente}:H{fila_existente}",
+                    range_name=f"A{fila_existente}:K{fila_existente}",
                     values=[fila_datos],
                     value_input_option="RAW",
                 )
@@ -223,7 +307,7 @@ def registrar_participante(data: RegistroRequest, request: Request):
             # 5. Si es un ID nuevo -> Insertar en la siguiente fila libre
             siguiente_fila = sum(1 for f in todos_registros if len(f) > 0 and f[0].strip() != "") + 1
             ws_registros.update(
-                range_name=f"A{siguiente_fila}:H{siguiente_fila}",
+                range_name=f"A{siguiente_fila}:K{siguiente_fila}",
                 values=[fila_datos],
                 value_input_option="RAW",
             )
