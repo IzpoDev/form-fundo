@@ -23,6 +23,8 @@ HOJA_REGISTROS = os.getenv("HOJA_REGISTROS", "Registro")
 CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 
 # Desactivamos /docs, /redoc y /openapi.json en producción
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 app = FastAPI(
     title="Registro de Dorsales Swift",
     docs_url=None,
@@ -48,7 +50,11 @@ else:
     creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
 
 gc = gspread.authorize(creds)
-sh = gc.open_by_key(SPREADSHEET_ID)
+try:
+    sh = gc.open_by_key(SPREADSHEET_ID)
+except Exception:
+    traceback.print_exc()
+    sh = None
 
 
 class RegistroRequest(BaseModel):
@@ -103,13 +109,18 @@ def buscar_fila_dorsal(ws_dorsales, numero_dorsal: int) -> int | None:
 
 @app.get("/", response_class=HTMLResponse)
 def servir_formulario():
-    with open("index.html", "r", encoding="utf-8") as f:
+    with open(os.path.join(BASE_DIR, "index.html"), "r", encoding="utf-8") as f:
         return f.read()
 
 
 @app.get("/camiseta.jpeg")
 def servir_imagen():
-    return FileResponse("camiseta.jpeg")
+    return FileResponse(os.path.join(BASE_DIR, "camiseta.jpeg"))
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return FileResponse(os.path.join(BASE_DIR, "favicon.ico"), media_type="image/x-icon")
 
 
 @app.get("/api/dorsales")
@@ -118,7 +129,10 @@ def listar_dorsales():
         return {"status": "ok", "dorsales": obtener_dorsales_disponibles()}
     except Exception:
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Error al consultar dorsales.")
+        raise HTTPException(
+            status_code=503,
+            detail="Las inscripciones han sido cerradas. Ya no es posible registrarse.",
+        )
 
 
 @app.post("/api/registrar")
@@ -221,6 +235,9 @@ def registrar_participante(data: RegistroRequest, request: Request):
                 "message": f"¡Registro exitoso (ID {id_limpio})! Dorsal #{data.dorsal} reservado (Total: S/ {precio}.00).",
             }
 
-        except Exception as e:
+        except Exception:
             traceback.print_exc()
-            raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+            raise HTTPException(
+                status_code=503,
+                detail="Las inscripciones han sido cerradas. Ya no es posible registrarse.",
+            )
